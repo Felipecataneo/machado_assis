@@ -650,7 +650,6 @@ else:
     - Modelo da Prova: `modelo_prova_leve.pt`
     - Modelo V3: `checkpoints_v3/best_model.pt    - Tokenizer BPE:tokenizer_bpe.pkl`
 """)
-Footer
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 1rem;'>
