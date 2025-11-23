@@ -379,7 +379,7 @@ def generate_text(model, tokenizer, prompt, max_tokens, temp, top_k, device):
                 logits[logits < v[:, [-1]]] = -float('Inf')
             
             probs = F.softmax(logits, dim=-1)
-            idx_next = torch.multinmultinomial(probs, num_samples=1)
+            idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
     
     return tokenizer.decode(idx[0].tolist()), idx.size(1)
