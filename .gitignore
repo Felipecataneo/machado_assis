@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
+
+# cache de tokens do corpus (regerado por train_k3.py)
 checkpoints_k3/tokens.pt
+
+# checkpoint em treino; o modelo final e' versionado explicitamente
+checkpoints_k3/best_model.pt
