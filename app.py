@@ -4,7 +4,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pickle
 import math
+import os
 import time
+
+# Versão K3 (arquitetura do Kimi K3) vive em model_k3.py — importada se existir
+try:
+    from model_k3 import KimiK3Config, GPTMachadoK3
+    K3_AVAILABLE = True
+except Exception:
+    K3_AVAILABLE = False
 
 # ============================================================================
 # 1. ARQUITETURA DA PROVA (GPTExam - Baseado em R)
@@ -271,7 +279,7 @@ class BPETokenizer:
 # ============================================================================
 
 @st.cache_resource
-def load_models_comparison(path_exam, path_modern, path_tokenizer_bpe):
+def load_models_comparison(path_exam, path_modern, path_tokenizer_bpe, path_k3=None):
     """Carrega ambos os modelos com seus respectivos tokenizers"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     models = {}
@@ -354,6 +362,43 @@ def load_models_comparison(path_exam, path_modern, path_tokenizer_bpe):
         tokenizers['modern'] = None
         infos['modern'] = None
 
+    # 3. Carregar Modelo K3 (arquitetura Kimi K3, mesmo tokenizer BPE)
+    models['k3'] = None
+    tokenizers['k3'] = None
+    infos['k3'] = None
+    if K3_AVAILABLE and path_k3 and os.path.exists(path_k3):
+        try:
+            ckpt_k3 = torch.load(path_k3, map_location=device, weights_only=False)
+            cfg_k3 = KimiK3Config(**ckpt_k3['config'])
+            model_k3 = GPTMachadoK3(cfg_k3)
+            model_k3.load_state_dict(ckpt_k3['model_state'])
+            model_k3.to(device).eval()
+
+            tokenizer_k3 = BPETokenizer()
+            tokenizer_k3.load(path_tokenizer_bpe)
+
+            models['k3'] = model_k3
+            tokenizers['k3'] = tokenizer_k3
+            types = cfg_k3.layer_types()
+            infos['k3'] = {
+                'vocab_size': cfg_k3.vocab_size,
+                'n_embd': cfg_k3.n_embd,
+                'n_layer': cfg_k3.n_layer,
+                'kda_layers': types.count('kda'),
+                'mla_layers': types.count('mla'),
+                'block_size': cfg_k3.block_size,
+                'n_experts': cfg_k3.n_experts,
+                'top_k': cfg_k3.n_experts_active,
+                'shared': cfg_k3.n_shared_experts,
+                'latent': cfg_k3.moe_latent_dim,
+                'params': model_k3.num_params() / 1e6,
+                'params_active': model_k3.num_params(active_only=True) / 1e6,
+                'val_loss': ckpt_k3.get('val_loss', 'N/A'),
+                'iteration': ckpt_k3.get('iteration', 0)
+            }
+        except Exception as e:
+            st.warning(f"⚠️ Não foi possível carregar modelo K3: {e}")
+
     return models, tokenizers, infos, device
 
 # ============================================================================
@@ -401,6 +446,7 @@ st.markdown("""
     .model-card { padding: 1.5rem; border-radius: 10px; margin: 1rem 0; }
     .exam-card { background-color: #fff3e0; border-left: 4px solid #ff9800; }
     .v3-card { background-color: #e8f5e9; border-left: 4px solid #4caf50; }
+    .k3-card { background-color: #ede7f6; border-left: 4px solid #673ab7; }
     .generated-text { 
         background-color: #f8f9fa; 
         padding: 1.5rem; 
@@ -425,6 +471,7 @@ with st.sidebar:
     
     path_exam = st.text_input("Modelo Prova (.pt)", "modelo_prova_leve.pt")
     path_modern = st.text_input("Modelo V3 (.pt)", "checkpoints_v3/best_model.pt")
+    path_k3 = st.text_input("Modelo K3 (.pt)", "checkpoints_k3/best_model.pt")
     path_tokenizer_bpe = st.text_input("Tokenizer BPE (.pkl)", "tokenizer_bpe.pkl")
     
     st.divider()
@@ -452,22 +499,24 @@ with st.sidebar:
     st.divider()
     st.info("""
     **⚠️ Nota Importante:**
-    
+
     Os modelos usam tokenizers diferentes:
     - **Prova:** CharTokenizer (nível de caractere)
-    - **V3:** BPETokenizer (subword tokens)
-    
+    - **V3 e K3:** BPETokenizer (subword tokens)
+
     Isso é esperado e não afeta a comparação qualitativa.
     """)
 
 # Carregar modelos
-models, tokenizers, infos, device = load_models_comparison(path_exam, path_modern, path_tokenizer_bpe)
+models, tokenizers, infos, device = load_models_comparison(
+    path_exam, path_modern, path_tokenizer_bpe, path_k3
+)
 
 if models and models.get('exam'):
     
     # Cards informativos
-    col1, col2 = st.columns(2)
-    
+    col1, col2, col3 = st.columns(3)
+
     with col1:
         info_exam = infos['exam']
         st.markdown(f"""
@@ -507,7 +556,42 @@ if models and models.get('exam'):
             """, unsafe_allow_html=True)
         else:
             st.error("❌ Modelo V3 não carregado")
-    
+
+    with col3:
+        if models.get('k3') and infos.get('k3'):
+            info_k3 = infos['k3']
+            st.markdown(f"""
+            <div class="model-card k3-card">
+                <h3>🌙 Modelo K3 - Kimi K3</h3>
+                <p><strong>Arquitetura:</strong> KDA + Gated MLA + LatentMoE</p>
+                <ul>
+                    <li><strong>Tokenizer:</strong> BPE ({info_k3['vocab_size']} tokens)</li>
+                    <li><strong>Embedding:</strong> {info_k3['n_embd']} dim</li>
+                    <li><strong>Camadas:</strong> {info_k3['n_layer']}
+                        ({info_k3['kda_layers']} KDA + {info_k3['mla_layers']} MLA, padrão 3:1)</li>
+                    <li><strong>Context:</strong> {info_k3['block_size']} tokens</li>
+                    <li><strong>MoE:</strong> top-{info_k3['top_k']} de {info_k3['n_experts']} experts
+                        + {info_k3['shared']} shared (latente {info_k3['latent']})</li>
+                    <li><strong>Parâmetros:</strong> {info_k3['params']:.2f}M
+                        ({info_k3['params_active']:.2f}M ativos/token)</li>
+                    <li><strong>Técnicas:</strong> KDA + NoPE + AttnRes + SiTU-GLU + Quantile Balancing</li>
+                    <li><strong>Iterações:</strong> {info_k3['iteration']:,}</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("""
+            **🌙 Modelo K3 (Kimi K3) — não treinado ainda**
+
+            A arquitetura está em `model_k3.py`. Para treinar:
+
+            ```
+            python train_k3.py --iters 8000
+            ```
+
+            O checkpoint sai em `checkpoints_k3/best_model.pt`.
+            """)
+
     # Input
     prompt = st.text_area(
         "✍️ Digite seu prompt:",
@@ -559,7 +643,25 @@ if models and models.get('exam'):
                 text_v3 = "Modelo V3 não disponível"
                 tokens_v3 = 0
                 time_v3 = 0
-            
+
+            # Modelo K3
+            if models.get('k3') and tokenizers.get('k3'):
+                start_k3 = time.time()
+                text_k3, tokens_k3 = generate_text(
+                    models['k3'],
+                    tokenizers['k3'],
+                    prompt,
+                    max_tokens,
+                    temperature,
+                    top_k,
+                    device
+                )
+                time_k3 = time.time() - start_k3
+            else:
+                text_k3 = "Modelo K3 não disponível"
+                tokens_k3 = 0
+                time_k3 = 0
+
             st.success("✅ Textos gerados com sucesso!")
             
             # Estatísticas
@@ -570,27 +672,35 @@ if models and models.get('exam'):
                 st.metric("Prova - Caracteres", len(text_exam))
                 if models.get('modern'):
                     st.metric("V3 - Caracteres", len(text_v3))
-            
+                if models.get('k3'):
+                    st.metric("K3 - Caracteres", len(text_k3))
+
             with col2:
                 st.metric("Prova - Palavras", len(text_exam.split()))
                 if models.get('modern'):
                     st.metric("V3 - Palavras", len(text_v3.split()))
-            
+                if models.get('k3'):
+                    st.metric("K3 - Palavras", len(text_k3.split()))
+
             with col3:
                 st.metric("Prova - Tokens", tokens_exam)
                 if models.get('modern'):
                     st.metric("V3 - Tokens", tokens_v3)
-            
+                if models.get('k3'):
+                    st.metric("K3 - Tokens", tokens_k3)
+
             with col4:
                 st.metric("Prova - Tempo (s)", f"{time_exam:.2f}")
                 if models.get('modern'):
                     st.metric("V3 - Tempo (s)", f"{time_v3:.2f}")
+                if models.get('k3'):
+                    st.metric("K3 - Tempo (s)", f"{time_k3:.2f}")
             
             # Textos gerados
             st.divider()
             
-            col1, col2 = st.columns(2)
-            
+            col1, col2, col3 = st.columns(3)
+
             with col1:
                 st.markdown("### 📘 Modelo da Prova")
                 st.caption("Arquitetura padrão com positional embeddings")
@@ -615,7 +725,21 @@ if models and models.get('exam'):
                     )
                 else:
                     st.error("Modelo V3 não disponível")
-            
+
+            with col3:
+                st.markdown("### 🌙 Modelo K3")
+                st.caption("Kimi K3: KDA + Gated MLA (NoPE) + LatentMoE")
+                if models.get('k3'):
+                    st.markdown(f'<div class="generated-text">{text_k3}</div>', unsafe_allow_html=True)
+                    st.download_button(
+                        "💾 Baixar Texto K3",
+                        text_k3,
+                        f"k3_{int(time.time())}.txt",
+                        key="download_k3"
+                    )
+                else:
+                    st.info("Treine com `python train_k3.py` para habilitar.")
+
             # Análise comparativa
             st.divider()
             st.markdown("### 🔍 Análise Comparativa")
@@ -635,11 +759,20 @@ if models and models.get('exam'):
             - 🚀 SwiGLU - activation function superior
             - 🚀 BPE tokenization - vocabulário mais rico
             - 🚀 Weight tying (embedding = output layer)
-            
+
+            **Modelo K3 (arquitetura do Kimi K3, jul/2026):**
+            - 🌙 KDA (Kimi Delta Attention) - atenção linear com delta rule e gate por canal
+            - 🌙 Hibridização 3:1 - 3 camadas KDA para cada Gated MLA (última sempre global)
+            - 🌙 NoPE - nenhuma codificação posicional; a posição vem do decaimento do KDA
+            - 🌙 AttnRes - cada camada lê as anteriores com pesos softmax, não com peso fixo 1
+            - 🌙 Stable LatentMoE - roteamento em latente d/2 + experts compartilhados
+            - 🌙 SiTU-GLU - ativação com soft-cap (|f| ≤ 100), sem outliers
+            - 🌙 Quantile Balancing - balanceamento de experts sem loss auxiliar
+
             **Expectativas:**
-            - V3 deve gerar texto com melhor coerência em sequências longas
-            - V3 deve ter vocabulário mais rico (BPE vs char-level)
-            - Ambos devem manter o estilo machadiano
+            - V3 deve gerar texto com melhor coerência em sequências longas que a Prova
+            - K3 troca o softmax quadrático por estado recorrente na maioria das camadas
+            - Todos devem manter o estilo machadiano
             """)
 
 else:
