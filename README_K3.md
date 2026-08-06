@@ -100,6 +100,31 @@ Muon com ortogonalização por Newton-Schulz aplicada **por cabeça** nas matriz
 de atenção (e por expert nos tensores empilhados do MoE). Embeddings, normas e
 o roteador ficam no AdamW.
 
+## Checkpoint incluído
+
+`checkpoints_k3/best_model.pt` — 5,66M parâmetros totais / 3,34M ativos por
+token, 6 camadas (4 KDA + 2 Gated MLA), contexto 192, 16 experts com top-2 e 2
+compartilhados. Treinado 2500 iterações em CPU (~46 min):
+
+| modelo | val loss | parâmetros |
+| --- | --- | --- |
+| Prova (GPT padrão, char-level) | — | 10,8M |
+| V3 (RoPE + RMSNorm + SwiGLU, 76k iterações) | 2,97 | 3,9M |
+| **K3 (esta versão, 2,5k iterações)** | **2,57** | 5,66M (3,34M ativos) |
+
+Comparação indicativa, não controlada: o K3 aqui usa contexto 192 contra 256 do
+V3, e o corpus/tokenizer são os mesmos. Vale como sinal de que a arquitetura
+treina bem em escala pequena, não como benchmark.
+
+A carga dos experts, que começa concentrada (máx/média ≈ 6,9 na iteração 200),
+converge para ≈ 2,0 com o Quantile Balancing — sem nenhuma loss auxiliar.
+
+Para treinar mais (ou maior):
+
+```bash
+python train_k3.py --iters 20000 --n_embd 320 --n_layer 8 --block_size 256
+```
+
 ## Diferenças de escala em relação ao K3 real
 
 | | Kimi K3 | Machado K3 |
