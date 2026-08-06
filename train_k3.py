@@ -245,6 +245,8 @@ def main():
     ap.add_argument("--n_layer", type=int, default=8)
     ap.add_argument("--n_experts", type=int, default=32)
     ap.add_argument("--top_k_experts", type=int, default=4)
+    ap.add_argument("--router_bias_rate", type=float, default=1e-2,
+                    help="taxa de atualização do bias no Quantile Balancing")
     ap.add_argument("--max_chars", type=int, default=None)
     ap.add_argument("--device", default=None)
     ap.add_argument("--quick", action="store_true", help="smoke test rápido")
@@ -279,6 +281,7 @@ def main():
         moe_latent_dim=args.n_embd // 2,
         expert_inter=args.n_embd // 2,
         shared_inter=int(args.n_embd * 0.9),
+        router_bias_rate=args.router_bias_rate,
     )
     model = GPTMachadoK3(cfg).to(device)
     print(f"device={device} | camadas={cfg.layer_types()}")
@@ -315,8 +318,8 @@ def main():
 
         if it % args.eval_every == 0 or it == args.iters - 1:
             m = evaluate(model, splits, args.block_size, args.batch_size, device, args.eval_iters)
-            load = model.expert_load()[0]
-            imbalance = (load.max() / (load.mean() + 1e-9)).item()
+            loads = model.expert_load()
+            imbalance = max((l.max() / (l.mean() + 1e-9)).item() for l in loads)
             print(f"it {it:6d} | lr {lr:.2e} | train {m['train']:.4f} | val {m['val']:.4f} "
                   f"| carga máx/média {imbalance:.2f} | {time.time()-t0:.0f}s")
             if m["val"] < best_val:

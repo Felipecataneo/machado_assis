@@ -70,7 +70,7 @@ class KimiK3Config:
     moe_latent_dim: int = 160   # = n_embd // 2, como no K3 (7168 -> 3584)
     expert_inter: int = 160     # ~0.86 * latente, arredondado
     shared_inter: int = 288     # ~0.86 * n_embd (por expert compartilhado)
-    router_bias_rate: float = 1e-3   # taxa de atualização do Quantile Balancing
+    router_bias_rate: float = 1e-2   # taxa de atualização do Quantile Balancing
 
     # --- SiTU-GLU ---
     situ_beta1: float = 4.0
@@ -236,11 +236,11 @@ def delta_rule_chunkwise(q, k, v, beta, log_alpha, chunk_size=64, state=None):
     N = Tp // C
 
     def to_chunks(x):                       # (B, T, H, D) -> (B, H, N, C, D)
-        return x.view(B, N, C, H, -1).permute(0, 3, 1, 2, 4)
+        return x.contiguous().view(B, N, C, H, -1).permute(0, 3, 1, 2, 4)
 
     q, k, v = to_chunks(q), to_chunks(k), to_chunks(v)
     la = to_chunks(log_alpha)
-    beta = beta.view(B, N, C, H).permute(0, 3, 1, 2).unsqueeze(-1)   # (B,H,N,C,1)
+    beta = beta.contiguous().view(B, N, C, H).permute(0, 3, 1, 2).unsqueeze(-1)   # (B,H,N,C,1)
 
     cum = la.cumsum(dim=-2)                                          # log A_t
     exp_cum = torch.exp(cum)
@@ -534,11 +534,9 @@ class GPTMachadoK3(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            nn.init.normal_(m.weight, mean=0.0, std=0.02)
-            if m.bias is not None and not getattr(m, "_keep_bias", False):
-                pass
-        elif isinstance(m, nn.Embedding):
+        # só os pesos: os bias de b_proj/a_proj do KDA são ajustados de propósito
+        # no construtor da camada e não devem ser sobrescritos aqui.
+        if isinstance(m, (nn.Linear, nn.Embedding)):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
