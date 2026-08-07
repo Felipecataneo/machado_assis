@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# cache de tokens do corpus (regerado por train_k3.py)
+checkpoints_k3/tokens.pt
+
